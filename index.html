@@ -783,29 +783,11 @@ function App() {
       }
     }
 
-    const fileName = getBackupFileName();
     const blob = new Blob([json], { type: "application/json" });
-
-    if (navigator.canShare && navigator.share) {
-      try {
-        const file = new File([blob], fileName, { type: "application/json" });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({
-            files: [file],
-            title: fileName,
-          });
-          showToast("Файл резервной копии скачан");
-          return;
-        }
-      } catch (e) {
-        if (e?.name === "AbortError") return;
-      }
-    }
-
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = fileName;
+    a.download = getBackupFileName();
     document.body.appendChild(a);
     a.click();
     a.remove();
