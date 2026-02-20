@@ -762,7 +762,7 @@ function App() {
     };
     const json = JSON.stringify(payload, null, 2);
 
-    if (window.showSaveFilePicker) {
+    if (window.showSaveFilePicker && window.isSecureContext) {
       try {
         const handle = await window.showSaveFilePicker({
           suggestedName: getBackupFileName(),
@@ -772,10 +772,10 @@ function App() {
         await writable.write(json);
         await writable.close();
         showToast("Резервная копия сохранена в файл");
+        return;
       } catch (e) {
-        if (e?.name !== "AbortError") showToast("Не удалось сохранить файл");
+        if (e?.name === "AbortError") return;
       }
-      return;
     }
 
     const blob = new Blob([json], { type: "application/json" });
@@ -806,8 +806,22 @@ function App() {
       showToast("Не удалось прочитать файл резервной копии");
     }
   };
+  const openRestoreDialogFallback = () => {
+    const input = restoreInputRef.current;
+    if (!input) {
+      showToast("Не удалось открыть выбор файла");
+      return;
+    }
+    try {
+      if (typeof input.showPicker === "function") {
+        input.showPicker();
+        return;
+      }
+    } catch {}
+    input.click();
+  };
   const restoreLatestBackup = async () => {
-    if (window.showOpenFilePicker) {
+    if (window.showOpenFilePicker && window.isSecureContext) {
       try {
         const [handle] = await window.showOpenFilePicker({
           multiple: false,
@@ -815,12 +829,12 @@ function App() {
         });
         const file = await handle.getFile();
         await restoreFromFile(file);
+        return;
       } catch (e) {
-        if (e?.name !== "AbortError") showToast("Не удалось выбрать файл резервной копии");
+        if (e?.name === "AbortError") return;
       }
-      return;
     }
-    restoreInputRef.current?.click();
+    openRestoreDialogFallback();
   };
   return (
     <div style={S.page}>
@@ -858,7 +872,7 @@ function App() {
         ref={restoreInputRef}
         type="file"
         accept=".json,application/json"
-        style={{ display:"none" }}
+        style={{ position:"fixed", left:"-9999px", top:0, width:1, height:1, opacity:0 }}
         onChange={async (e) => {
           const file = e.target.files && e.target.files[0];
           e.target.value = "";
