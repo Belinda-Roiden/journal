@@ -43,6 +43,8 @@ const initialJournal = () => ({
   subjects: Array.from({length:10}, (_,i) => ({ id: mkId(), name: `Предмет ${i+1}`, teacher: "", lessons: [] })),
 });
 
+const BACKUP_KEY = "ej_backup_latest";
+
 // ─── Config (загружается из localStorage, вводится при первом запуске) ─────────
 const loadConfig = () => ls.get("ej_config") || null;
 const saveConfig = (c) => ls.set("ej_config", c);
@@ -744,6 +746,23 @@ function App() {
     saveJournal({...data, subjects:data.subjects.filter(s=>s.id!==sid)});
     showToast("Предмет удалён");
   };
+  const createBackup = () => {
+    ls.set(BACKUP_KEY, {
+      createdAt: new Date().toISOString(),
+      data,
+    });
+    showToast("Резервная копия создана");
+  };
+  const restoreLatestBackup = () => {
+    const backup = ls.get(BACKUP_KEY);
+    if (!backup || !backup.data || !Array.isArray(backup.data.students) || !Array.isArray(backup.data.subjects)) {
+      showToast("Резервная копия не найдена");
+      return;
+    }
+    if (!window.confirm("Восстановить последнюю резервную копию? Текущие изменения будут заменены.")) return;
+    saveJournal(backup.data);
+    showToast("Последняя резервная копия восстановлена");
+  };
   return (
     <div style={S.page}>
       <Toast msg={toast}/>
@@ -768,6 +787,14 @@ function App() {
           ✓ Сохранено
         </div>
       )}
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
+        <button onClick={createBackup} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13 }}>
+          Создать резервную копию
+        </button>
+        <button onClick={restoreLatestBackup} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13 }}>
+          Восстановить последнюю резервную копию
+        </button>
+      </div>
       {data.subjects.map((subj,i)=>{
         const hours = totalHours(subj);
         return (
