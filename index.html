@@ -22,7 +22,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useRef } = React;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const LESSON_TYPES = ["Лекция", "Практика", "Семинар", "Лабораторная"];
@@ -42,8 +42,6 @@ const initialJournal = () => ({
   students: Array.from({length:10}, (_,i) => `Студент ${i+1}`),
   subjects: Array.from({length:10}, (_,i) => ({ id: mkId(), name: `Предмет ${i+1}`, teacher: "", lessons: [] })),
 });
-
-const BACKUP_KEY = "ej_backup_latest";
 
 // ─── Config (загружается из localStorage, вводится при первом запуске) ─────────
 const loadConfig = () => ls.get("ej_config") || null;
@@ -380,6 +378,7 @@ function App() {
   const [screen, setScreen] = useState({ type:"main" });
   const [toast, setToast] = useState(null);
   const [saveStatus, setSaveStatus] = useState("saved"); // "saved"|"saving"|"pending"
+  const restoreInputRef = useRef(null);
 
   useEffect(() => {
     _onStatusChange = setSaveStatus;
@@ -746,22 +745,82 @@ function App() {
     saveJournal({...data, subjects:data.subjects.filter(s=>s.id!==sid)});
     showToast("Предмет удалён");
   };
-  const createBackup = () => {
-    ls.set(BACKUP_KEY, {
-      createdAt: new Date().toISOString(),
-      data,
-    });
-    showToast("Резервная копия создана");
+  const getBackupFileName = () => {
+    const ts = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-");
+    return `journal-backup-${ts}.json`;
   };
-  const restoreLatestBackup = () => {
-    const backup = ls.get(BACKUP_KEY);
-    if (!backup || !backup.data || !Array.isArray(backup.data.students) || !Array.isArray(backup.data.subjects)) {
-      showToast("Резервная копия не найдена");
+  const extractJournalFromBackup = (raw) => {
+    if (raw && raw.journal && Array.isArray(raw.journal.students) && Array.isArray(raw.journal.subjects)) return raw.journal;
+    if (raw && Array.isArray(raw.students) && Array.isArray(raw.subjects)) return raw;
+    return null;
+  };
+  const createBackup = async () => {
+    const payload = {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      journal: data,
+    };
+    const json = JSON.stringify(payload, null, 2);
+
+    if (window.showSaveFilePicker) {
+      try {
+        const handle = await window.showSaveFilePicker({
+          suggestedName: getBackupFileName(),
+          types: [{ description: "JSON backup", accept: { "application/json": [".json"] } }],
+        });
+        const writable = await handle.createWritable();
+        await writable.write(json);
+        await writable.close();
+        showToast("Резервная копия сохранена в файл");
+      } catch (e) {
+        if (e?.name !== "AbortError") showToast("Не удалось сохранить файл");
+      }
       return;
     }
-    if (!window.confirm("Восстановить последнюю резервную копию? Текущие изменения будут заменены.")) return;
-    saveJournal(backup.data);
-    showToast("Последняя резервная копия восстановлена");
+
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = getBackupFileName();
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast("Файл резервной копии скачан");
+  };
+  const restoreFromFile = async (file) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const journal = extractJournalFromBackup(parsed);
+      if (!journal) {
+        showToast("Неверный формат файла резервной копии");
+        return;
+      }
+      if (!window.confirm("Восстановить резервную копию из выбранного файла? Текущие изменения будут заменены.")) return;
+      saveJournal(journal);
+      showToast("Резервная копия восстановлена из файла");
+    } catch {
+      showToast("Не удалось прочитать файл резервной копии");
+    }
+  };
+  const restoreLatestBackup = async () => {
+    if (window.showOpenFilePicker) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [{ description: "JSON backup", accept: { "application/json": [".json"] } }],
+        });
+        const file = await handle.getFile();
+        await restoreFromFile(file);
+      } catch (e) {
+        if (e?.name !== "AbortError") showToast("Не удалось выбрать файл резервной копии");
+      }
+      return;
+    }
+    restoreInputRef.current?.click();
   };
   return (
     <div style={S.page}>
@@ -795,6 +854,17 @@ function App() {
           Восстановить последнюю резервную копию
         </button>
       </div>
+      <input
+        ref={restoreInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display:"none" }}
+        onChange={async (e) => {
+          const file = e.target.files && e.target.files[0];
+          e.target.value = "";
+          await restoreFromFile(file);
+        }}
+      />
       {data.subjects.map((subj,i)=>{
         const hours = totalHours(subj);
         return (
