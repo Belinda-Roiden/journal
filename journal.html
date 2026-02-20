@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>📓 Электронный журнал</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=Source+Serif+4:ital,wght@0,300;0,400;0,600;1,300&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f5f0e8; font-family: 'Source Serif 4', Georgia, serif; }
+  input, select, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: #c4b49a; border-radius: 2px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const LESSON_TYPES = ["Лекция", "Практика", "Семинар", "Лабораторная"];
+const ATT = {
+  present: { label: "Присутствует",  short: "П", color: "#4a9a38", bg: "#eaf5e4", border: "#c8e8b8" },
+  sick:    { label: "Болезнь",       short: "Б", color: "#d07820", bg: "#fdf3e4", border: "#f0d8a8" },
+  valid:   { label: "Уваж. причина", short: "У", color: "#3060c0", bg: "#e8edf8", border: "#b8ccf0" },
+  absent:  { label: "Отсутствует",   short: "Н", color: "#c03030", bg: "#fde8e8", border: "#f0c8c8" },
+};
+const ATT_CYCLE = ["present", "sick", "valid", "absent"];
+const mkId = () => Math.random().toString(36).slice(2, 10);
+const mkCode = () => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  return Array.from({length:8}, (_,i) => i===4?"-":chars[Math.floor(Math.random()*chars.length)]).join("");
+};
+const initialJournal = () => ({
+  students: Array.from({length:10}, (_,i) => `Студент ${i+1}`),
+  subjects: Array.from({length:10}, (_,i) => ({ id: mkId(), name: `Предмет ${i+1}`, teacher: "", lessons: [] })),
+});
+
+// ─── Config (загружается из localStorage, вводится при первом запуске) ─────────
+const loadConfig = () => ls.get("ej_config") || null;
+const saveConfig = (c) => ls.set("ej_config", c);
+
+let _cfg = null; // { binId, apiKey }
+const getBinUrl = () => `https://api.jsonbin.io/v3/b/${_cfg.binId}`;
+
+// ─── LocalStorage (только аккаунты — пароли в облако не идут) ────────────────
+const ls = {
+  get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const loadUsers = () => ls.get("ej_users") || [];
+const saveUsers = (u) => ls.set("ej_users", u);
+
+// ─── JSONBin (данные журнала) ─────────────────────────────────────────────────
+const fetchJournal = async () => {
+  try {
+    const r = await fetch(getBinUrl() + "/latest", {
+      headers: { "X-Master-Key": _cfg.apiKey, "X-Bin-Meta": "false" }
+    });
+    if (!r.ok) throw new Error("fetch failed");
+    const d = await r.json();
+    if (d && Array.isArray(d.students)) return d;
+    return initialJournal();
+  } catch {
+    return ls.get("ej_cache") || initialJournal();
+  }
+};
+
+let _saveTimer = null;
+let _pendingData = null;
+let _saveStatus = "saved"; // "saved" | "saving" | "pending"
+let _onStatusChange = null;
+
+const pushJournal = (d) => {
+  ls.set("ej_cache", d);
+  _pendingData = d;
+  _saveStatus = "pending";
+  if (_onStatusChange) _onStatusChange("pending");
+  clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => _doSave(d), 600);
+};
+
+const _doSave = async (d) => {
+  _saveStatus = "saving";
+  if (_onStatusChange) _onStatusChange("saving");
+  try {
+    await fetch(getBinUrl(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Master-Key": _cfg.apiKey },
+      body: JSON.stringify(d)
+    });
+    _pendingData = null;
+    _saveStatus = "saved";
+    if (_onStatusChange) _onStatusChange("saved");
+  } catch {
+    _saveStatus = "pending";
+    if (_onStatusChange) _onStatusChange("pending");
+  }
+};
+
+window.addEventListener("beforeunload", () => {
+  if (_pendingData && _cfg) {
+    clearTimeout(_saveTimer);
+    const blob = new Blob([JSON.stringify(_pendingData)], {type:"application/json"});
+    navigator.sendBeacon
+      ? navigator.sendBeacon(getBinUrl() + "?apikey=" + encodeURIComponent(_cfg.apiKey), blob)
+      : null;
+  }
+});
+
+const hashPass = async (s) => {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,"0")).join("");
+};
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+const S = {
+  page:    { maxWidth: 640, margin: "0 auto", padding: "16px 16px 80px", minHeight: "100vh" },
+  card:    { background: "#fffdf7", border: "1px solid #e8dcc8", borderRadius: 16, overflow: "hidden", marginBottom: 12, boxShadow: "0 2px 8px rgba(120,100,70,.06)" },
+  field:   { border: "1px solid #e0d5c0", borderRadius: 10, padding: "9px 12px", width: "100%", fontSize: 14, background: "#fffdf7", color: "#3a2e20", outline: "none", fontFamily: "'Source Serif 4', serif", boxSizing: "border-box" },
+  label:   { display: "block", fontSize: 11, color: "#9a8a72", letterSpacing: .5, textTransform: "uppercase", marginBottom: 4 },
+  btn:     (v="") => ({ cursor:"pointer", border:"none", borderRadius:12, padding:"10px 20px", fontSize:14, fontFamily:"'Source Serif 4', serif", fontWeight:600, transition:"all .15s", ...(v==="primary"?{background:"#3a2e20",color:"#f5f0e8"}:v==="danger"?{background:"#fde8e8",color:"#a83030"}:v==="ghost"?{background:"transparent",color:"#7a6a52"}:{background:"#f0ebe0",color:"#3a2e20"}) }),
+  head:    { display: "flex", alignItems: "center", gap: 12, marginBottom: 20 },
+  backBtn: { cursor:"pointer", background:"#f0ebe0", border:"none", borderRadius:10, width:36, height:36, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, color:"#7a6a52", flexShrink:0 },
+  h1:      { fontFamily: "'Playfair Display', serif", fontSize: 22, fontWeight: 700, color: "#2a1e10", margin: 0 },
+  h2:      { fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 600, color: "#3a2e20", margin: "0 0 12px" },
+  badge:   (c="") => ({ display:"inline-block", fontSize:11, padding:"2px 10px", borderRadius:100, fontWeight:600, letterSpacing:.3, background:c==="g"?"#e8f5e2":c==="r"?"#fde8e8":c==="b"?"#e8edf5":c==="o"?"#fdf3e4":"#f0ebe0", color:c==="g"?"#3a7a28":c==="r"?"#a83030":c==="b"?"#2a4a8a":c==="o"?"#a06010":"#7a6040" }),
+  inp:     (x={}) => ({ background:"transparent", border:"none", outline:"none", width:"100%", color:"#3a2e20", fontSize:14, padding:"2px 4px", borderRadius:6, fontFamily:"'Source Serif 4', serif", ...x }),
+};
+
+function Toast({ msg }) {
+  if (!msg) return null;
+  return <div style={{ position:"fixed", top:16, left:"50%", transform:"translateX(-50%)", background:"#3a2e20", color:"#f5f0e8", padding:"8px 20px", borderRadius:100, fontSize:13, zIndex:9999, boxShadow:"0 4px 12px rgba(0,0,0,.2)", whiteSpace:"nowrap" }}>{msg}</div>;
+}
+function Fld({ label, children }) {
+  return <div style={{ marginBottom:14 }}><label style={S.label}>{label}</label>{children}</div>;
+}
+function Err({ msg }) {
+  if (!msg) return null;
+  return <div style={{ background:"#fde8e8", color:"#a83030", padding:"8px 12px", borderRadius:10, fontSize:13, marginBottom:16 }}>{msg}</div>;
+}
+
+// ─── Config setup screen (первый запуск — ввод JSONBin данных) ────────────────
+function ConfigSetupScreen({ onDone }) {
+  const [f, setF] = useState({ binId:"", apiKey:"" });
+  const [err, setErr] = useState(""); const [loading, setLoading] = useState(false);
+  const set = k => e => setF(p=>({...p,[k]:e.target.value}));
+  const submit = async () => {
+    if (!f.binId.trim() || !f.apiKey.trim()) return setErr("Заполни оба поля");
+    setLoading(true); setErr("");
+    // Проверяем что ключ и bin работают
+    try {
+      const r = await fetch(`https://api.jsonbin.io/v3/b/${f.binId.trim()}/latest`, {
+        headers: { "X-Master-Key": f.apiKey.trim(), "X-Bin-Meta": "false" }
+      });
+      if (!r.ok) throw new Error();
+    } catch {
+      setErr("Не удалось подключиться. Проверь правильность Bin ID и API-ключа.");
+      setLoading(false); return;
+    }
+    const cfg = { binId: f.binId.trim(), apiKey: f.apiKey.trim() };
+    saveConfig(cfg);
+    onDone(cfg);
+  };
+  return (
+    <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
+      <div style={{ ...S.card, padding:28 }}>
+        <h1 style={{ ...S.h1, fontSize:22, marginBottom:6 }}>📓 Электронный журнал</h1>
+        <p style={{ color:"#9a8a72", fontSize:14, marginBottom:8 }}>Первый запуск. Для работы журнала нужно подключить облачное хранилище JSONBin.</p>
+        <div style={{ background:"#f0ebe0", borderRadius:12, padding:"10px 14px", fontSize:13, color:"#7a6040", marginBottom:20, lineHeight:1.6 }}>
+          <b>Как получить данные:</b><br/>
+          1. Зайди на <b>jsonbin.io</b> и зарегистрируйся<br/>
+          2. В разделе <b>API Keys</b> скопируй ключ<br/>
+          3. В разделе <b>Bins</b> создай новый bin (содержимое: <code>{`{"ready":true}`}</code>)<br/>
+          4. Скопируй ID созданного bin
+        </div>
+        <Err msg={err} />
+        <Fld label="Bin ID"><input value={f.binId} onChange={set("binId")} style={S.field} placeholder="например: 64f3a1c85e6d3a7b8c9d1234" /></Fld>
+        <Fld label="API-ключ (Master Key)"><input value={f.apiKey} onChange={set("apiKey")} style={S.field} placeholder="$2a$10$..." /></Fld>
+        <button onClick={submit} disabled={loading} style={{ ...S.btn("primary"), width:"100%", padding:13, borderRadius:12, fontSize:15 }}>
+          {loading ? "Проверяем подключение…" : "Подключить и продолжить"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Recovery code generator ──────────────────────────────────────────────────
+const genRecoveryCode = () => {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const seg = () => Array.from({length:4}, ()=>chars[Math.floor(Math.random()*chars.length)]).join("");
+  return `${seg()}-${seg()}-${seg()}`;
+};
+
+// ─── Auth screens ─────────────────────────────────────────────────────────────
+function SetupScreen({ onDone }) {
+  const [f, setF] = useState({ name:"", group:"", pass:"", pass2:"" });
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState(null);
+  const set = k => e => setF(p=>({...p,[k]:e.target.value}));
+
+  const submit = async () => {
+    if (!f.name.trim()) return setErr("Введи ФИО");
+    if (!f.group.trim()) return setErr("Введи номер группы");
+    if (f.pass.length < 4) return setErr("Пароль минимум 4 символа");
+    if (f.pass !== f.pass2) return setErr("Пароли не совпадают");
+    setLoading(true);
+    const code = genRecoveryCode();
+    const user = {
+      id: mkId(),
+      name: f.name.trim(),
+      group: f.group.trim(),
+      role: "admin",
+      passHash: await hashPass(f.pass),
+      recoveryHash: await hashPass(code + f.group.trim().toLowerCase()),
+    };
+    saveUsers([user]);
+    setRecoveryCode(code);
+    setLoading(false);
+  };
+
+  // ── Показываем резервный код после регистрации ──
+  if (recoveryCode) {
+    const users = loadUsers();
+    const user = users[0];
+    return (
+      <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
+        <div style={{ ...S.card, padding:28 }}>
+          <div style={{ fontSize:28, marginBottom:8, textAlign:"center" }}>🔐</div>
+          <h1 style={{ ...S.h1, fontSize:20, marginBottom:8, textAlign:"center" }}>Сохрани резервный код!</h1>
+          <p style={{ color:"#9a8a72", fontSize:13, marginBottom:20, textAlign:"center" }}>
+            Если забудешь пароль, он поможет его сбросить вместе с номером группы. Покажется только один раз.
+          </p>
+          <div style={{ background:"#f0ebe0", border:"2px dashed #c4a060", borderRadius:14, padding:"18px 12px", textAlign:"center", marginBottom:20 }}>
+            <div style={{ fontFamily:"monospace", fontSize:22, fontWeight:700, color:"#3a2e20", letterSpacing:3 }}>{recoveryCode}</div>
+            <button onClick={()=>{navigator.clipboard?.writeText(recoveryCode);}} style={{ marginTop:10, ...S.btn(""), padding:"5px 14px", fontSize:12, borderRadius:8 }}>Скопировать</button>
+          </div>
+          <p style={{ color:"#c03030", fontSize:12, marginBottom:20, textAlign:"center", fontWeight:600 }}>
+            ⚠️ Запиши код в надёжное место. После закрытия этого экрана код увидеть нельзя.
+          </p>
+          <button onClick={()=>onDone(user)} style={{ ...S.btn("primary"), width:"100%", padding:13, borderRadius:12, fontSize:15 }}>
+            Я сохранила — войти в журнал
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
+      <div style={{ ...S.card, padding:28 }}>
+        <h1 style={{ ...S.h1, fontSize:24, marginBottom:6 }}>📓 Электронный журнал</h1>
+        <p style={{ color:"#9a8a72", fontSize:14, marginBottom:24 }}>Первый запуск. Создай аккаунт старосты.</p>
+        <Err msg={err} />
+        <Fld label="ФИО старосты"><input value={f.name} onChange={set("name")} style={S.field} placeholder="Иванова Мария Сергеевна" /></Fld>
+        <Fld label="Номер группы"><input value={f.group} onChange={set("group")} style={S.field} placeholder="Например: ПЕР-301" /></Fld>
+        <Fld label="Пароль"><input type="password" value={f.pass} onChange={set("pass")} style={S.field} /></Fld>
+        <Fld label="Повтори пароль"><input type="password" value={f.pass2} onChange={set("pass2")} style={S.field} onKeyDown={e=>e.key==="Enter"&&submit()} /></Fld>
+        <button onClick={submit} disabled={loading} style={{ ...S.btn("primary"), width:"100%", padding:13, borderRadius:12, fontSize:15 }}>
+          {loading?"Создаём…":"Создать аккаунт"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ResetScreen({ onBack, onReset }) {
+  const [f, setF] = useState({ code:"", group:"", pass:"", pass2:"" });
+  const [err, setErr] = useState(""); const [loading, setLoading] = useState(false);
+  const set = k => e => setF(p=>({...p,[k]:e.target.value}));
+  const submit = async () => {
+    if (!f.code.trim() || !f.group.trim()) return setErr("Заполни все поля");
+    if (f.pass.length < 4) return setErr("Пароль минимум 4 символа");
+    if (f.pass !== f.pass2) return setErr("Пароли не совпадают");
+    setLoading(true);
+    const users = loadUsers();
+    if (users.length === 0) { setErr("Аккаунт не найден"); setLoading(false); return; }
+    const user = users[0];
+    const checkHash = await hashPass(f.code.trim().toUpperCase() + f.group.trim().toLowerCase());
+    if (checkHash !== user.recoveryHash) { setErr("Неверный код или номер группы"); setLoading(false); return; }
+    const newHash = await hashPass(f.pass);
+    const newCode = genRecoveryCode();
+    const newRecoveryHash = await hashPass(newCode + f.group.trim().toLowerCase());
+    const updated = { ...user, passHash: newHash, recoveryHash: newRecoveryHash };
+    saveUsers([updated]);
+    onReset(updated, newCode);
+  };
+  return (
+    <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
+      <div style={{ ...S.card, padding:28 }}>
+        <div style={S.head}><button style={S.backBtn} onClick={onBack}>←</button><h1 style={{ ...S.h1, fontSize:20 }}>Сброс пароля</h1></div>
+        <Err msg={err} />
+        <Fld label="Резервный код"><input value={f.code} onChange={set("code")} style={S.field} placeholder="XXXX-XXXX-XXXX" /></Fld>
+        <Fld label="Номер группы"><input value={f.group} onChange={set("group")} style={S.field} placeholder="Как при регистрации" /></Fld>
+        <Fld label="Новый пароль"><input type="password" value={f.pass} onChange={set("pass")} style={S.field} /></Fld>
+        <Fld label="Повтори новый пароль"><input type="password" value={f.pass2} onChange={set("pass2")} style={S.field} onKeyDown={e=>e.key==="Enter"&&submit()} /></Fld>
+        <button onClick={submit} disabled={loading} style={{ ...S.btn("primary"), width:"100%", padding:13, borderRadius:12, fontSize:15 }}>
+          {loading?"Проверяем…":"Сбросить пароль"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function LoginScreen({ onDone }) {
+  const [f, setF] = useState({ name:"", pass:"" });
+  const [err, setErr] = useState(""); const [loading, setLoading] = useState(false);
+  const [screen, setScreen] = useState("login"); // login | reset | newcode
+  const [newCode, setNewCode] = useState(null);
+  const set = k => e => setF(p=>({...p,[k]:e.target.value}));
+
+  const submit = async () => {
+    setLoading(true); setErr("");
+    const users = loadUsers();
+    const h = await hashPass(f.pass);
+    const user = users.find(u => u.name.toLowerCase()===f.name.trim().toLowerCase() && u.passHash===h);
+    if (!user) { setErr("Неверное ФИО или пароль"); setLoading(false); return; }
+    onDone(user);
+  };
+
+  if (screen==="reset") return (
+    <ResetScreen onBack={()=>setScreen("login")} onReset={(user, code)=>{ setNewCode(code); setScreen("newcode"); }} />
+  );
+
+  if (screen==="newcode") return (
+    <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
+      <div style={{ ...S.card, padding:28 }}>
+        <div style={{ fontSize:28, marginBottom:8, textAlign:"center" }}>✅</div>
+        <h1 style={{ ...S.h1, fontSize:20, marginBottom:8, textAlign:"center" }}>Пароль сброшен!</h1>
+        <p style={{ color:"#9a8a72", fontSize:13, marginBottom:16, textAlign:"center" }}>Автоматически создан новый резервный код. Сохрани его!</p>
+        <div style={{ background:"#f0ebe0", border:"2px dashed #c4a060", borderRadius:14, padding:"18px 12px", textAlign:"center", marginBottom:16 }}>
+          <div style={{ fontFamily:"monospace", fontSize:22, fontWeight:700, color:"#3a2e20", letterSpacing:3 }}>{newCode}</div>
+          <button onClick={()=>navigator.clipboard?.writeText(newCode)} style={{ marginTop:10, ...S.btn(""), padding:"5px 14px", fontSize:12, borderRadius:8 }}>Скопировать</button>
+        </div>
+        <p style={{ color:"#c03030", fontSize:12, marginBottom:20, textAlign:"center", fontWeight:600 }}>⚠️ Старый код больше не работает.</p>
+        <button onClick={()=>setScreen("login")} style={{ ...S.btn("primary"), width:"100%", padding:13, borderRadius:12, fontSize:15 }}>Войти с новым паролем</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
+      <div style={{ ...S.card, padding:28 }}>
+        <h1 style={{ ...S.h1, fontSize:24, marginBottom:6 }}>📓 Журнал</h1>
+        <p style={{ color:"#9a8a72", fontSize:14, marginBottom:24 }}>Вход в систему</p>
+        <Err msg={err} />
+        <Fld label="ФИО"><input value={f.name} onChange={set("name")} style={S.field} placeholder="Точно как при регистрации" /></Fld>
+        <Fld label="Пароль"><input type="password" value={f.pass} onChange={set("pass")} style={S.field} onKeyDown={e=>e.key==="Enter"&&submit()} /></Fld>
+        <button onClick={submit} disabled={loading} style={{ ...S.btn("primary"), width:"100%", padding:13, borderRadius:12, fontSize:15, marginBottom:12 }}>
+          {loading?"Входим…":"Войти"}
+        </button>
+        <button onClick={()=>setScreen("reset")} style={{ ...S.btn("ghost"), width:"100%", padding:10, fontSize:13, marginBottom:4 }}>
+          Забыла пароль
+        </button>
+        <button onClick={()=>{ if(window.confirm("Сбросить аккаунт на этом устройстве? Данные журнала не пострадают — они в облаке. После сброса потребуется зарегистрироваться заново.")) { localStorage.removeItem("ej_users"); location.reload(); } }} style={{ ...S.btn("ghost"), width:"100%", padding:8, fontSize:11, color:"#b0a080" }}>
+          Сменить устройство / сбросить аккаунт
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [appState, setAppState] = useState("loading");
+  const [user, setUser] = useState(null);
+  const [data, setData] = useState(null);
+  const [screen, setScreen] = useState({ type:"main" });
+  const [toast, setToast] = useState(null);
+  const [saveStatus, setSaveStatus] = useState("saved"); // "saved"|"saving"|"pending"
+
+  useEffect(() => {
+    _onStatusChange = setSaveStatus;
+    return () => { _onStatusChange = null; };
+  }, []);
+
+  useEffect(() => {
+    const cfg = loadConfig();
+    if (!cfg) { setAppState("config"); return; }
+    _cfg = cfg;
+    (async () => {
+      const users = loadUsers();
+      const d = await fetchJournal();
+      setData(d);
+      setAppState(users.length===0 ? "setup" : "login");
+    })();
+  }, []);
+
+  const showToast = (msg) => { setToast(msg); setTimeout(()=>setToast(null),2500); };
+
+  const saveJournal = (nd) => {
+    setData(nd);
+    pushJournal(nd);
+  };
+
+  const handleLogin = async (u) => {
+    setUser(u);
+    setAppState("loading-data");
+    const d = await fetchJournal();
+    setData(d);
+    setAppState("app");
+    setScreen({type:"main"});
+  };
+
+  if (appState==="loading" || appState==="loading-data") return (
+    <div style={{ display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", height:"100vh", gap:12, fontFamily:"'Playfair Display', serif", color:"#7a6a52" }}>
+      <div style={{ fontSize:18 }}>{appState==="loading-data" ? "Загружаем журнал…" : "Загрузка…"}</div>
+      <div style={{ fontSize:12, color:"#b0a080" }}>Подключаемся к облаку</div>
+    </div>
+  );
+  if (appState==="config") return <ConfigSetupScreen onDone={(cfg)=>{ _cfg=cfg; const users=loadUsers(); setAppState(users.length===0?"setup":"login"); }} />;
+  if (appState==="setup") return <SetupScreen onDone={handleLogin} />;
+  if (appState==="login") return <LoginScreen onDone={handleLogin} />;
+
+  const isAdmin = user.role==="admin";
+  const updateSubject = (sid, upd) => { saveJournal({...data, subjects:data.subjects.map(s=>s.id===sid?{...s,...upd}:s)}); };
+  const updateLesson = (sid, lid, upd) => { saveJournal({...data, subjects:data.subjects.map(s=>s.id===sid?{...s,lessons:s.lessons.map(l=>l.id===lid?{...l,...upd}:l)}:s)}); };
+  const addLesson = (sid) => {
+    const nl = { id:mkId(), date:new Date().toISOString().split("T")[0], topic:"", type:"Лекция", hours:2, attendance:{}, signature:null };
+    const subj = data.subjects.find(s=>s.id===sid);
+    saveJournal({...data, subjects:data.subjects.map(s=>s.id===sid?{...s,lessons:[...s.lessons,nl]}:s)});
+    return nl.id;
+  };
+  const deleteLesson = (sid, lid) => {
+    saveJournal({...data, subjects:data.subjects.map(s=>s.id===sid?{...s,lessons:s.lessons.filter(l=>l.id!==lid)}:s)});
+    setScreen({type:"subject",subjectId:sid}); showToast("Занятие удалено");
+  };
+  const cycleAtt = (sid, lid, idx) => {
+    const subj = data.subjects.find(s=>s.id===sid);
+    const les = subj.lessons.find(l=>l.id===lid);
+    const cur = les.attendance[idx]||"present";
+    const next = ATT_CYCLE[(ATT_CYCLE.indexOf(cur)+1)%ATT_CYCLE.length];
+    updateLesson(sid, lid, {attendance:{...les.attendance,[idx]:next}});
+  };
+  const totalHours = (subj) => subj.lessons.reduce((s,l)=>s+(Number(l.hours)||0),0);
+  const attCount = (les, st) => data.students.filter((_,i)=>(les.attendance[i]||"present")===st).length;
+
+  const subject = screen.subjectId ? data.subjects.find(s=>s.id===screen.subjectId) : null;
+  const lesson = (subject&&screen.lessonId) ? subject.lessons.find(l=>l.id===screen.lessonId) : null;
+
+  if (screen.type==="codes") return null;
+
+  if (screen.type==="students") {
+    const addStudent = () => {
+      const s = [...data.students, `Студент ${data.students.length+1}`];
+      saveJournal({...data, students:s});
+      showToast("Студент добавлен");
+    };
+    const removeStudent = (i) => {
+      if (data.students.length <= 1) return showToast("Нельзя удалить последнего студента");
+      if (!window.confirm(`Удалить студента «${data.students[i]}»? Данные о его посещаемости во всех занятиях сохранятся по номеру.`)) return;
+      const s = data.students.filter((_,idx)=>idx!==i);
+      saveJournal({...data, students:s});
+      showToast("Студент удалён");
+    };
+    // quick total absences per student across all subjects
+    const totalAbsHours = (idx) => {
+      let h = 0;
+      data.subjects.forEach(subj => subj.lessons.forEach(les => {
+        const st = les.attendance[idx]||"present";
+        if (st !== "present") h += Number(les.hours)||0;
+      }));
+      return h;
+    };
+    return (
+      <div style={S.page}>
+        <Toast msg={toast}/>
+        <div style={S.head}>
+          <button style={S.backBtn} onClick={()=>setScreen({type:"main"})}>←</button>
+          <h1 style={S.h1}>Список студентов</h1>
+          <span style={{ marginLeft:"auto", fontSize:13, color:"#9a8a72" }}>{data.students.length} чел.</span>
+        </div>
+        <div style={{ ...S.card, padding:16 }}>
+          {data.students.map((name,i)=>{
+            const absH = totalAbsHours(i);
+            return (
+              <div key={i} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 0", borderBottom:i<data.students.length-1?"1px solid #f0e8d8":"none" }}>
+                <span style={{ width:24, textAlign:"right", color:"#b0a080", fontSize:13, fontFamily:"monospace", flexShrink:0 }}>{i+1}.</span>
+                <input style={S.inp({fontSize:15,flex:1})} value={name} onChange={e=>{const s=[...data.students];s[i]=e.target.value;saveJournal({...data,students:s});}} placeholder={`Студент ${i+1}`}/>
+                {absH > 0 && <span style={{ fontSize:11, color:"#c03030", fontWeight:600, flexShrink:0 }}>{absH} ч.</span>}
+                <button onClick={()=>setScreen({type:"student",studentIdx:i})} style={{ background:"#f0ebe0", border:"none", borderRadius:8, padding:"4px 10px", fontSize:12, color:"#7a5a30", cursor:"pointer", flexShrink:0 }}>Профиль →</button>
+                <button onClick={()=>removeStudent(i)} style={{ background:"none", border:"none", cursor:"pointer", color:"#d0a0a0", fontSize:18, padding:"0 2px", lineHeight:1, flexShrink:0 }}>×</button>
+              </div>
+            );
+          })}
+        </div>
+        <button onClick={addStudent} style={{ ...S.btn("primary"), width:"100%", padding:13, borderRadius:14, fontSize:15 }}>+ Добавить студента</button>
+      </div>
+    );
+  }
+
+  // ── Student profile ──
+  if (screen.type==="student") {
+    const idx = screen.studentIdx;
+    const name = data.students[idx] || `Студент ${idx+1}`;
+
+    // Calculate per-subject stats
+    const subjectStats = data.subjects.map(subj => {
+      let sick=0, valid=0, absent=0, present=0;
+      subj.lessons.forEach(les => {
+        const h = Number(les.hours)||0;
+        const st = les.attendance[idx]||"present";
+        if (st==="present") present+=h;
+        else if (st==="sick") sick+=h;
+        else if (st==="valid") valid+=h;
+        else if (st==="absent") absent+=h;
+      });
+      const totalLessonHours = present+sick+valid+absent;
+      return { subj, sick, valid, absent, present, totalLessonHours };
+    }).filter(s=>s.totalLessonHours>0); // skip subjects with no lessons yet
+
+    const totSick   = subjectStats.reduce((a,s)=>a+s.sick,0);
+    const totValid  = subjectStats.reduce((a,s)=>a+s.valid,0);
+    const totAbsent = subjectStats.reduce((a,s)=>a+s.absent,0);
+    const totAll    = totSick+totValid+totAbsent;
+
+    return (
+      <div style={S.page}>
+        <Toast msg={toast}/>
+        <div style={S.head}>
+          <button style={S.backBtn} onClick={()=>setScreen({type:"students"})}>←</button>
+          <div style={{ flex:1 }}>
+            <h1 style={{ ...S.h1, fontSize:19 }}>{name}</h1>
+            <div style={{ fontSize:13, color:"#9a8a72" }}>Профиль студента</div>
+          </div>
+        </div>
+
+        {/* Summary card */}
+        <div style={{ ...S.card, padding:16, marginBottom:12 }}>
+          <h2 style={S.h2}>Итого пропусков</h2>
+          {totAll === 0 ? (
+            <div style={{ color:"#4a9a38", fontWeight:600, fontSize:15 }}>✓ Пропусков нет</div>
+          ) : (
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8 }}>
+              {[
+                { label:"Болезнь", val:totSick,   color:ATT.sick.color,   bg:ATT.sick.bg,   border:ATT.sick.border   },
+                { label:"Уваж.",   val:totValid,  color:ATT.valid.color,  bg:ATT.valid.bg,  border:ATT.valid.border  },
+                { label:"Без пр.", val:totAbsent, color:ATT.absent.color, bg:ATT.absent.bg, border:ATT.absent.border },
+              ].map(({label,val,color,bg,border})=>(
+                <div key={label} style={{ background:bg, border:`1px solid ${border}`, borderRadius:12, padding:"12px 10px", textAlign:"center" }}>
+                  <div style={{ fontFamily:"'Playfair Display', serif", fontSize:24, fontWeight:700, color, lineHeight:1 }}>{val}</div>
+                  <div style={{ fontSize:11, color, marginTop:4 }}>{label}</div>
+                  <div style={{ fontSize:10, color:"#b0a080", marginTop:1 }}>ч.</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {totAll > 0 && <div style={{ marginTop:12, fontSize:13, color:"#9a8a72", textAlign:"right" }}>Всего: <b style={{ color:"#3a2e20" }}>{totAll} ч.</b></div>}
+        </div>
+
+        {/* Per-subject breakdown */}
+        {subjectStats.length === 0 ? (
+          <div style={{ textAlign:"center", color:"#b0a080", padding:"30px 0", fontStyle:"italic" }}>Занятий пока не было</div>
+        ) : (
+          subjectStats.map(({subj,sick,valid,absent,present,totalLessonHours})=>{
+            const hasAbs = sick+valid+absent > 0;
+            return (
+              <div key={subj.id} style={{ ...S.card, padding:16 }}>
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom: hasAbs?12:0 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontWeight:600, fontSize:15, color:"#2a1e10" }}>{subj.name||"Без названия"}</div>
+                    <div style={{ fontSize:12, color:"#9a8a72", marginTop:2 }}>{subj.teacher||"—"}</div>
+                  </div>
+                  <div style={{ textAlign:"right", flexShrink:0 }}>
+                    {hasAbs
+                      ? <span style={{ ...S.badge("r"), fontSize:12 }}>{sick+valid+absent} ч. пропусков</span>
+                      : <span style={{ ...S.badge("g"), fontSize:12 }}>✓ нет пропусков</span>
+                    }
+                  </div>
+                </div>
+                {hasAbs && (
+                  <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                    {sick>0   && <div style={{ display:"flex", alignItems:"center", gap:6, background:ATT.sick.bg,   border:`1px solid ${ATT.sick.border}`,   borderRadius:10, padding:"6px 12px" }}><span style={{ fontFamily:"'Playfair Display', serif", fontWeight:700, color:ATT.sick.color,   fontSize:16 }}>{sick}</span>  <span style={{ fontSize:12, color:ATT.sick.color   }}>ч. · Болезнь</span></div>}
+                    {valid>0  && <div style={{ display:"flex", alignItems:"center", gap:6, background:ATT.valid.bg,  border:`1px solid ${ATT.valid.border}`,  borderRadius:10, padding:"6px 12px" }}><span style={{ fontFamily:"'Playfair Display', serif", fontWeight:700, color:ATT.valid.color,  fontSize:16 }}>{valid}</span> <span style={{ fontSize:12, color:ATT.valid.color  }}>ч. · Уваж. причина</span></div>}
+                    {absent>0 && <div style={{ display:"flex", alignItems:"center", gap:6, background:ATT.absent.bg, border:`1px solid ${ATT.absent.border}`, borderRadius:10, padding:"6px 12px" }}><span style={{ fontFamily:"'Playfair Display', serif", fontWeight:700, color:ATT.absent.color, fontSize:16 }}>{absent}</span><span style={{ fontSize:12, color:ATT.absent.color }}>ч. · Без причины</span></div>}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+    );
+  }
+
+  if (screen.type==="lesson" && subject && lesson) {
+    const canEdit = isAdmin;
+    return (
+      <div style={S.page}>
+        <Toast msg={toast}/>
+        <div style={S.head}>
+          <button style={S.backBtn} onClick={()=>setScreen({type:"subject",subjectId:subject.id})}>←</button>
+          <div style={{ flex:1 }}>
+            <h1 style={{ ...S.h1, fontSize:19 }}>Занятие</h1>
+            <div style={{ fontSize:13, color:"#9a8a72" }}>{subject.name}</div>
+          </div>
+          {isAdmin && <button onClick={()=>{if(window.confirm("Удалить занятие?"))deleteLesson(subject.id,lesson.id);}} style={{ ...S.btn("danger"), padding:"6px 12px", fontSize:12, borderRadius:10 }}>Удалить</button>}
+        </div>
+
+        <div style={{ ...S.card, padding:16, marginBottom:12 }}>
+          <h2 style={S.h2}>Информация</h2>
+          <Fld label="Дата"><input type="date" value={lesson.date} onChange={e=>canEdit&&updateLesson(subject.id,lesson.id,{date:e.target.value})} style={{ ...S.field, background:canEdit?"#fffdf7":"#f5f0e8" }} disabled={!canEdit}/></Fld>
+          <Fld label="Тема занятия"><input value={lesson.topic} onChange={e=>canEdit&&updateLesson(subject.id,lesson.id,{topic:e.target.value})} placeholder="Введите тему…" style={{ ...S.field, background:canEdit?"#fffdf7":"#f5f0e8" }} disabled={!canEdit}/></Fld>
+          <div style={{ display:"flex", gap:10 }}>
+            <div style={{ flex:1 }}>
+              <label style={S.label}>Тип</label>
+              <select value={lesson.type} onChange={e=>canEdit&&updateLesson(subject.id,lesson.id,{type:e.target.value})} style={{ ...S.field, background:canEdit?"#fffdf7":"#f5f0e8" }} disabled={!canEdit}>
+                {LESSON_TYPES.map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div style={{ width:90 }}>
+              <label style={S.label}>Часов</label>
+              <input type="number" min="1" max="12" value={lesson.hours} onChange={e=>canEdit&&updateLesson(subject.id,lesson.id,{hours:Number(e.target.value)})} style={{ ...S.field, background:canEdit?"#fffdf7":"#f5f0e8" }} disabled={!canEdit}/>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ ...S.card, padding:16, marginBottom:12 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+            <h2 style={{ ...S.h2, margin:0 }}>Посещаемость</h2>
+            <span style={{ fontFamily:"'Playfair Display', serif", fontSize:18, fontWeight:700, color:"#3a7a28" }}>
+              {attCount(lesson,"present")}<span style={{ color:"#b0a080", fontSize:13, fontWeight:400 }}>/{data.students.length}</span>
+            </span>
+          </div>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:12 }}>
+            {Object.entries(ATT).map(([k,v])=>(
+              <span key={k} style={{ display:"flex", alignItems:"center", gap:4, fontSize:11, color:v.color, background:v.bg, padding:"2px 8px 2px 6px", borderRadius:100, border:`1px solid ${v.border}` }}>
+                <b>{v.short}</b> {v.label}
+              </span>
+            ))}
+          </div>
+          {isAdmin && <p style={{ fontSize:11, color:"#b0a080", margin:"0 0 10px" }}>Нажимай на кружок — статус меняется: П → Б → У → Н</p>}
+          {data.students.map((name,i)=>{
+            const st = lesson.attendance[i]||"present";
+            const a = ATT[st];
+            return (
+              <div key={i} style={{ display:"flex", alignItems:"center", gap:10, padding:"7px 10px", borderRadius:10, marginBottom:3, background:a.bg, border:`1px solid ${a.border}` }}>
+                <div onClick={()=>isAdmin&&cycleAtt(subject.id,lesson.id,i)} style={{ width:28, height:28, borderRadius:"50%", background:"white", border:`2px solid ${a.border}`, display:"flex", alignItems:"center", justifyContent:"center", color:a.color, fontSize:11, fontWeight:700, flexShrink:0, cursor:isAdmin?"pointer":"default", userSelect:"none" }}>
+                  {a.short}
+                </div>
+                <span style={{ fontSize:12, color:"#9a8a72", width:20, textAlign:"right", flexShrink:0 }}>{i+1}.</span>
+                <span style={{ fontSize:14, color:"#3a2e20", flex:1 }}>{name}</span>
+                <span style={{ fontSize:11, color:a.color, fontWeight:600 }}>{a.label}</span>
+              </div>
+            );
+          })}
+          {isAdmin && (
+            <div style={{ display:"flex", gap:8, marginTop:12 }}>
+              <button onClick={()=>{const att={};data.students.forEach((_,i)=>att[i]="present");updateLesson(subject.id,lesson.id,{attendance:att});showToast("Все присутствуют");}} style={{ ...S.btn(""), flex:1, background:"#eaf5e4", color:"#3a7a28", borderRadius:10, padding:"8px 0", fontSize:13 }}>Все присутствуют</button>
+              <button onClick={()=>{const att={};data.students.forEach((_,i)=>att[i]="absent");updateLesson(subject.id,lesson.id,{attendance:att});showToast("Все отсутствуют");}} style={{ ...S.btn(""), flex:1, background:"#faeaea", color:"#a83030", borderRadius:10, padding:"8px 0", fontSize:13 }}>Все отсутствуют</button>
+            </div>
+          )}
+        </div>
+
+        <div style={{ ...S.card, padding:16 }}>
+          <h2 style={S.h2}>Подпись преподавателя</h2>
+          <div style={{ color:"#b0a080", fontSize:14, fontStyle:"italic" }}>Функция подписи будет доступна после добавления аккаунтов преподавателей.</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (screen.type==="subject" && subject) {
+    const hours = totalHours(subject);
+    return (
+      <div style={S.page}>
+        <Toast msg={toast}/>
+        <div style={S.head}>
+          <button style={S.backBtn} onClick={()=>setScreen({type:"main"})}>←</button>
+          <div style={{ flex:1 }}>
+            <h1 style={{ ...S.h1, fontSize:19 }}>{subject.name||"Без названия"}</h1>
+            <div style={{ fontSize:13, color:"#9a8a72" }}>{subject.teacher||"Преподаватель не указан"}</div>
+          </div>
+          <div style={{ textAlign:"right", flexShrink:0 }}>
+            <div style={{ fontFamily:"'Playfair Display', serif", fontSize:26, fontWeight:700, color:"#3a2e20", lineHeight:1 }}>{hours}</div>
+            <div style={{ fontSize:11, color:"#b0a080" }}>часов</div>
+          </div>
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:8, marginBottom:16 }}>
+          {[["📚","Занятий",subject.lessons.length],["⏱","Часов",hours],["✍","Подписано",subject.lessons.filter(l=>l.signature).length]].map(([ic,l,v])=>(
+            <div key={l} style={{ ...S.card, padding:"12px 10px", textAlign:"center", marginBottom:0 }}>
+              <div style={{ fontFamily:"'Playfair Display', serif", fontSize:20, fontWeight:700, color:"#3a2e20" }}>{v}</div>
+              <div style={{ fontSize:11, color:"#9a8a72" }}>{ic} {l}</div>
+            </div>
+          ))}
+        </div>
+        {isAdmin && <button onClick={()=>{const id=addLesson(subject.id);setScreen({type:"lesson",subjectId:subject.id,lessonId:id});}} style={{ ...S.btn("primary"), width:"100%", padding:13, marginBottom:16, borderRadius:14, fontSize:15 }}>+ Добавить занятие</button>}
+        {subject.lessons.length===0 && <div style={{ textAlign:"center", color:"#b0a080", padding:"40px 20px", fontStyle:"italic" }}>Занятий пока нет.</div>}
+        {[...subject.lessons].reverse().map(les=>{
+          const dateStr = les.date?new Date(les.date+"T00:00:00").toLocaleDateString("ru-RU",{day:"numeric",month:"long"}):"—";
+          const pc=attCount(les,"present"),nc=attCount(les,"absent"),sc=attCount(les,"sick"),vc=attCount(les,"valid");
+          return (
+            <div key={les.id} onClick={()=>setScreen({type:"lesson",subjectId:subject.id,lessonId:les.id})}
+              style={{ ...S.card, padding:"14px 16px", cursor:"pointer" }}
+              onMouseEnter={e=>e.currentTarget.style.boxShadow="0 4px 16px rgba(120,100,70,.12)"}
+              onMouseLeave={e=>e.currentTarget.style.boxShadow="0 2px 8px rgba(120,100,70,.06)"}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
+                <div>
+                  <div style={{ fontWeight:600, fontSize:15, color:"#2a1e10" }}>{dateStr}</div>
+                  <div style={{ fontSize:13, color:"#7a6a52", marginTop:2 }}>{les.topic||<em style={{ color:"#b0a080" }}>Тема не указана</em>}</div>
+                </div>
+                <div style={{ textAlign:"right", flexShrink:0 }}>
+                  <span style={S.badge("b")}>{les.type}</span>
+                  <div style={{ fontSize:12, color:"#b0a080", marginTop:4 }}>{les.hours} ч.</div>
+                </div>
+              </div>
+              <div style={{ display:"flex", gap:5, flexWrap:"wrap", alignItems:"center" }}>
+                {pc>0&&<span style={S.badge("g")}>П {pc}</span>}
+                {nc>0&&<span style={S.badge("r")}>Н {nc}</span>}
+                {sc>0&&<span style={S.badge("o")}>Б {sc}</span>}
+                {vc>0&&<span style={S.badge("b")}>У {vc}</span>}
+                {les.signature&&<span style={S.badge("")}>✍ {les.signature.userName}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // Main
+  const addSubject = () => {
+    const n = data.subjects.length + 1;
+    saveJournal({...data, subjects:[...data.subjects, { id:mkId(), name:`Предмет ${n}`, teacher:"", lessons:[] }]});
+    showToast("Предмет добавлен");
+  };
+  const removeSubject = (sid) => {
+    const subj = data.subjects.find(s=>s.id===sid);
+    if (subj.lessons.length > 0) {
+      if (!window.confirm(`У предмета «${subj.name}» есть ${subj.lessons.length} занятий. Удалить вместе со всеми данными?`)) return;
+    } else {
+      if (!window.confirm(`Удалить предмет «${subj.name}»?`)) return;
+    }
+    saveJournal({...data, subjects:data.subjects.filter(s=>s.id!==sid)});
+    showToast("Предмет удалён");
+  };
+  return (
+    <div style={S.page}>
+      <Toast msg={toast}/>
+      <div style={{ marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+        <div>
+          <h1 style={{ ...S.h1, fontSize:26, margin:"0 0 4px" }}>📓 Журнал группы</h1>
+          <div style={{ fontSize:13, color:"#9a8a72" }}>{user.name} · Староста{user.group ? ` · ${user.group}` : ""}</div>
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          {isAdmin&&<button onClick={()=>setScreen({type:"students"})} style={{ ...S.btn(""), padding:"8px 12px", fontSize:13, borderRadius:10 }}>👤</button>}
+          <button onClick={()=>{setUser(null);setAppState("login");}} style={{ ...S.btn(""), padding:"8px 12px", fontSize:13, borderRadius:10 }}>Выйти</button>
+        </div>
+      </div>
+      {saveStatus !== "saved" && (
+        <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:"#9a8a72", marginBottom:12, padding:"6px 12px", background:"#f0ebe0", borderRadius:100, width:"fit-content" }}>
+          <span style={{ display:"inline-block", width:8, height:8, borderRadius:"50%", background: saveStatus==="saving"?"#6aaa50":"#c4a060", animation:"pulse 1s infinite" }}>●</span>
+          {saveStatus==="saving" ? "Сохраняем…" : "Ожидает сохранения…"}
+        </div>
+      )}
+      {saveStatus === "saved" && (
+        <div style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:"#6aaa50", marginBottom:12, padding:"6px 12px", background:"#eaf5e4", borderRadius:100, width:"fit-content" }}>
+          ✓ Сохранено
+        </div>
+      )}
+      {data.subjects.map((subj,i)=>{
+        const hours = totalHours(subj);
+        return (
+          <div key={subj.id} style={S.card}>
+            <div style={{ display:"flex", alignItems:"flex-start", gap:12, padding:"14px 16px" }}>
+              <div style={{ width:34, height:34, background:"#f0e8d8", borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Playfair Display', serif", fontWeight:700, color:"#7a6040", fontSize:15, flexShrink:0 }}>{i+1}</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                {isAdmin
+                  ? <><input value={subj.name} onChange={e=>updateSubject(subj.id,{name:e.target.value})} style={S.inp({fontWeight:600,fontSize:15,marginBottom:2})} placeholder="Название предмета"/><input value={subj.teacher} onChange={e=>updateSubject(subj.id,{teacher:e.target.value})} style={S.inp({fontSize:13,color:"#9a8a72"})} placeholder="ФИО преподавателя"/></>
+                  : <><div style={{ fontWeight:600, fontSize:15, color:"#2a1e10" }}>{subj.name}</div><div style={{ fontSize:13, color:"#9a8a72" }}>{subj.teacher||"—"}</div></>
+                }
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:4, flexShrink:0 }}>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ fontFamily:"'Playfair Display', serif", fontSize:22, fontWeight:700, color:"#3a2e20", lineHeight:1 }}>{hours}</div>
+                  <div style={{ fontSize:11, color:"#b0a080" }}>ч.</div>
+                </div>
+                <button onClick={()=>removeSubject(subj.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"#d0a0a0", fontSize:20, padding:"0", lineHeight:1 }} title="Удалить предмет">×</button>
+              </div>
+            </div>
+            <button onClick={()=>setScreen({type:"subject",subjectId:subj.id})}
+              style={{ width:"100%", padding:"10px 16px", background:"#f5f0e8", border:"none", borderTop:"1px solid #e8dcc8", color:"#7a5a30", fontSize:13, cursor:"pointer", fontFamily:"'Source Serif 4', serif", fontWeight:600, textAlign:"left" }}
+              onMouseEnter={e=>e.currentTarget.style.background="#ede6d8"}
+              onMouseLeave={e=>e.currentTarget.style.background="#f5f0e8"}>
+              Открыть журнал · {subj.lessons.length} занятий →
+            </button>
+          </div>
+        );
+      })}
+      <button onClick={addSubject} style={{ ...S.btn(""), width:"100%", padding:13, borderRadius:14, fontSize:15, marginTop:4 }}>+ Добавить предмет</button>
+      {isAdmin&&<p style={{ textAlign:"center", fontSize:12, color:"#c0b090", fontStyle:"italic", marginTop:12 }}>Нажми на название/ФИО, чтобы изменить · × чтобы удалить</p>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
