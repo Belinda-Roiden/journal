@@ -258,7 +258,12 @@ function SetupScreen({ onDone }) {
     <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
       <div style={{ ...S.card, padding:28 }}>
         <h1 style={{ ...S.h1, fontSize:24, marginBottom:6 }}>📓 Электронный журнал</h1>
-        <p style={{ color:"#9a8a72", fontSize:14, marginBottom:24 }}>Первый запуск. Создай аккаунт старосты.</p>
+        <p style={{ color:"#9a8a72", fontSize:14, marginBottom:10 }}>Первый запуск. Создай аккаунт старосты.</p>
+        <p style={{ fontSize:13, margin:"0 0 18px" }}>
+          <a href="./Инструкция.md" target="_blank" rel="noreferrer" style={{ color:"#7a6040", textDecoration:"underline" }}>
+            Открыть инструкцию по работе с журналом
+          </a>
+        </p>
         <Err msg={err} />
         <Fld label="ФИО старосты"><input value={f.name} onChange={set("name")} style={S.field} placeholder="Иванова Мария Сергеевна" /></Fld>
         <Fld label="Номер группы"><input value={f.group} onChange={set("group")} style={S.field} placeholder="Например: ПЕР-301" /></Fld>
