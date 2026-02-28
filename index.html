@@ -207,7 +207,7 @@ function Err({ msg }) {
 
 function GitHubFooter() {
   return (
-    <div style={{ display:"inline-flex", alignItems:"center", gap:10, flexShrink:0 }}>
+    <div style={{ display:"inline-flex", alignItems:"center", gap:10, flexShrink:0, flexWrap:"wrap" }}>
       <a
         href="https://github.com/belinda-roiden/journal"
         target="_blank"
@@ -930,8 +930,8 @@ function App() {
       <Toast msg={toast}/>
       <div style={{ marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div>
-          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
-            <h1 style={{ ...S.h1, fontSize:26, margin:0 }}>📓 Журнал группы</h1>
+          <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4, flexWrap:"wrap" }}>
+            <h1 style={{ ...S.h1, fontSize:26, margin:0, flexShrink:0 }}>📓 Журнал группы</h1>
             <GitHubFooter />
           </div>
           <div style={{ fontSize:13, color:"#9a8a72" }}>{user.name} · Староста{user.group ? ` · ${user.group}` : ""}</div>
@@ -953,11 +953,13 @@ function App() {
         </div>
       )}
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
-        <button onClick={createBackup} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13 }}>
-          Создать резервную копию
+        <button onClick={createBackup} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Скачать РК</span>
         </button>
-        <button onClick={() => restoreInputRef.current && restoreInputRef.current.click()} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13 }}>
-          Восстановить последнюю резервную копию
+        <button onClick={() => restoreInputRef.current && restoreInputRef.current.click()} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <span>Загрузить РК</span>
         </button>
       </div>
       <input
