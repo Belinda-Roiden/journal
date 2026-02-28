@@ -205,6 +205,37 @@ function Err({ msg }) {
   return <div style={{ background:"#fde8e8", color:"#a83030", padding:"8px 12px", borderRadius:10, fontSize:13, marginBottom:16 }}>{msg}</div>;
 }
 
+function GitHubFooter() {
+  return (
+    <div style={{ display:"inline-flex", alignItems:"center", gap:10, flexShrink:0 }}>
+      <a
+        href="https://github.com/belinda-roiden/journal"
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Открыть репозиторий проекта на GitHub"
+        title="GitHub репозиторий"
+        style={{ color: "#7a6a52", display: "inline-flex", opacity: 0.88, flexShrink: 0 }}
+      >
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
+          <path d="M12 .5C5.648.5.5 5.648.5 12c0 5.082 3.292 9.395 7.86 10.915.575.106.786-.25.786-.556 0-.274-.01-1-.015-1.963-3.197.695-3.873-1.54-3.873-1.54-.523-1.328-1.277-1.682-1.277-1.682-1.044-.714.079-.699.079-.699 1.154.081 1.761 1.185 1.761 1.185 1.026 1.757 2.692 1.25 3.348.956.104-.743.402-1.25.731-1.538-2.552-.29-5.236-1.276-5.236-5.68 0-1.255.448-2.281 1.183-3.085-.119-.29-.513-1.456.112-3.036 0 0 .965-.309 3.162 1.179A10.99 10.99 0 0 1 12 6.035c.976.004 1.961.132 2.88.387 2.195-1.488 3.158-1.179 3.158-1.179.627 1.58.233 2.746.114 3.036.737.804 1.181 1.83 1.181 3.085 0 4.414-2.688 5.387-5.249 5.67.413.356.781 1.058.781 2.133 0 1.54-.014 2.781-.014 3.16 0 .309.207.668.792.554C20.21 21.391 23.5 17.08 23.5 12c0-6.352-5.148-11.5-11.5-11.5z"/>
+        </svg>
+      </a>
+      <a
+        href="https://t.me/+1XUrof6k_TgwN2Uy"
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Открыть Telegram"
+        title="Telegram"
+        style={{ color: "#7a6a52", display: "inline-flex", opacity: 0.88, flexShrink: 0 }}
+      >
+        <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor" aria-hidden="true">
+          <path d="M21.94 4.66a1.5 1.5 0 0 0-1.63-.24L2.9 11.58a1.5 1.5 0 0 0 .11 2.81l4.06 1.38 1.51 4.89a1.5 1.5 0 0 0 2.56.61l2.25-2.34 3.97 2.92a1.5 1.5 0 0 0 2.35-.86l2.8-14.85a1.5 1.5 0 0 0-.57-1.48ZM9.35 15.55l8.82-7.03-6.9 8.57-.74 2.82-1.18-4.36Zm2.7.96 5.85-7.26-1.9 10.08-3.95-2.82Z"/>
+        </svg>
+      </a>
+    </div>
+  );
+}
+
 // ─── Config setup screen (первый запуск — ввод JSONBin данных) ────────────────
 function ConfigSetupScreen({ onDone }) {
   const [f, setF] = useState({ binId:"", apiKey:"" });
@@ -315,7 +346,10 @@ function SetupScreen({ onDone }) {
   return (
     <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
       <div style={{ ...S.card, padding:28 }}>
-        <h1 style={{ ...S.h1, fontSize:24, marginBottom:6 }}>📓 Электронный журнал</h1>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, marginBottom:6 }}>
+          <h1 style={{ ...S.h1, fontSize:24, margin:0 }}>📓 Электронный журнал</h1>
+          <GitHubFooter />
+        </div>
         <p style={{ color:"#9a8a72", fontSize:14, marginBottom:10 }}>Первый запуск. Создай аккаунт старосты.</p>
         <p style={{ fontSize:13, margin:"0 0 18px" }}>
           <a href="./Инструкция.md" target="_blank" rel="noreferrer" style={{ color:"#7a6040", textDecoration:"underline" }}>
@@ -412,7 +446,10 @@ function LoginScreen({ onDone }) {
   return (
     <div style={{ ...S.page, display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"100vh" }}>
       <div style={{ ...S.card, padding:28 }}>
-        <h1 style={{ ...S.h1, fontSize:24, marginBottom:6 }}>📓 Журнал</h1>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:12, marginBottom:6 }}>
+          <h1 style={{ ...S.h1, fontSize:24, margin:0 }}>📓 Журнал</h1>
+          <GitHubFooter />
+        </div>
         <p style={{ color:"#9a8a72", fontSize:14, marginBottom:24 }}>Вход в систему</p>
         <Err msg={err} />
         <Fld label="ФИО"><input value={f.name} onChange={set("name")} style={S.field} placeholder="Точно как при регистрации" /></Fld>
@@ -549,6 +586,7 @@ function App() {
         <div style={S.head}>
           <button style={S.backBtn} onClick={()=>setScreen({type:"main"})}>←</button>
           <h1 style={S.h1}>Список студентов</h1>
+          <GitHubFooter />
           <span style={{ marginLeft:"auto", fontSize:13, color:"#9a8a72" }}>{data.students.length} чел.</span>
         </div>
         <div style={{ ...S.card, padding:16 }}>
@@ -892,7 +930,10 @@ function App() {
       <Toast msg={toast}/>
       <div style={{ marginBottom:20, display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
         <div>
-          <h1 style={{ ...S.h1, fontSize:26, margin:"0 0 4px" }}>📓 Журнал группы</h1>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:4 }}>
+            <h1 style={{ ...S.h1, fontSize:26, margin:0 }}>📓 Журнал группы</h1>
+            <GitHubFooter />
+          </div>
           <div style={{ fontSize:13, color:"#9a8a72" }}>{user.name} · Староста{user.group ? ` · ${user.group}` : ""}</div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
