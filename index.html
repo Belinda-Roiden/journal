@@ -44,19 +44,73 @@ const initialJournal = () => ({
 });
 
 // ─── Config (загружается из localStorage, вводится при первом запуске) ─────────
-const loadConfig = () => ls.get("ej_config") || null;
-const saveConfig = (c) => ls.set("ej_config", c);
+// Дополнительно дублируем в sessionStorage — он живёт до закрытия браузера
+// и не зачищается ITP в отличие от localStorage
+const loadConfig = () => {
+  return ls.get("ej_config") || (() => {
+    try { const v = sessionStorage.getItem("ej_config"); return v ? JSON.parse(v) : null; } catch { return null; }
+  })();
+};
+const saveConfig = (c) => {
+  ls.set("ej_config", c);
+  try { sessionStorage.setItem("ej_config", JSON.stringify(c)); } catch {}
+};
 
 let _cfg = null; // { binId, apiKey }
 const getBinUrl = () => `https://api.jsonbin.io/v3/b/${_cfg.binId}`;
 
-// ─── LocalStorage (только аккаунты — пароли в облако не идут) ────────────────
+// ─── LocalStorage (аккаунты) ──────────────────────────────────────────────────
+// Пароли не хранятся в открытом виде — только хэши (SHA-256)
 const ls = {
   get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 const loadUsers = () => ls.get("ej_users") || [];
-const saveUsers = (u) => ls.set("ej_users", u);
+const saveUsers = (u) => {
+  ls.set("ej_users", u);
+  // Дублируем в облако, чтобы не терять аккаунт при очистке localStorage (iOS Safari)
+  _pendingAccountData = u;
+  if (_cfg) _scheduleAccountSave();
+};
+
+// Восстановление аккаунта из облака, если localStorage пуст
+const restoreUsersFromCloud = async () => {
+  try {
+    const r = await fetch(getBinUrl() + "/latest", {
+      headers: { "X-Master-Key": _cfg.apiKey, "X-Bin-Meta": "false" }
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (d && Array.isArray(d._account) && d._account.length > 0) {
+      ls.set("ej_users", d._account); // восстанавливаем в localStorage
+      return d._account;
+    }
+  } catch {}
+  return null;
+};
+
+let _pendingAccountData = null;
+let _accountSaveTimer = null;
+const _scheduleAccountSave = () => {
+  clearTimeout(_accountSaveTimer);
+  _accountSaveTimer = setTimeout(async () => {
+    if (!_pendingAccountData || !_cfg) return;
+    try {
+      // Читаем текущий bin, добавляем _account, пишем обратно
+      const r = await fetch(getBinUrl() + "/latest", {
+        headers: { "X-Master-Key": _cfg.apiKey, "X-Bin-Meta": "false" }
+      });
+      if (!r.ok) return;
+      const current = await r.json();
+      await fetch(getBinUrl(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Master-Key": _cfg.apiKey },
+        body: JSON.stringify({ ...current, _account: _pendingAccountData }),
+      });
+      _pendingAccountData = null;
+    } catch {}
+  }, 1000);
+};
 
 // ─── JSONBin (данные журнала) ─────────────────────────────────────────────────
 const fetchJournal = async () => {
@@ -105,13 +159,17 @@ const _doSave = async (d) => {
   }
 };
 
-window.addEventListener("beforeunload", () => {
-  if (_pendingData && _cfg) {
+// Сохраняем при уходе со страницы — работает и на мобильных (beforeunload ненадёжен на iOS)
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden" && _pendingData && _cfg) {
     clearTimeout(_saveTimer);
-    const blob = new Blob([JSON.stringify(_pendingData)], {type:"application/json"});
-    navigator.sendBeacon
-      ? navigator.sendBeacon(getBinUrl() + "?apikey=" + encodeURIComponent(_cfg.apiKey), blob)
-      : null;
+    // keepalive позволяет запросу завершиться даже после закрытия вкладки
+    fetch(getBinUrl(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Master-Key": _cfg.apiKey },
+      body: JSON.stringify(_pendingData),
+      keepalive: true,
+    }).catch(() => {});
   }
 });
 
@@ -393,9 +451,16 @@ function App() {
   useEffect(() => {
     const cfg = loadConfig();
     if (!cfg) { setAppState("config"); return; }
+    // Синхронизируем sessionStorage при старте (на случай если localStorage работает)
+    try { sessionStorage.setItem("ej_config", JSON.stringify(cfg)); } catch {}
     _cfg = cfg;
     (async () => {
-      const users = loadUsers();
+      let users = loadUsers();
+      // localStorage мог быть очищен браузером (iOS Safari ITP) — пробуем восстановить из облака
+      if (users.length === 0) {
+        const cloudUsers = await restoreUsersFromCloud();
+        if (cloudUsers && cloudUsers.length > 0) users = cloudUsers;
+      }
       const d = await fetchJournal();
       setData(d);
       setAppState(users.length===0 ? "setup" : "login");
@@ -766,24 +831,26 @@ function App() {
       journal: data,
     };
     const json = JSON.stringify(payload, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
 
-    if (window.showSaveFilePicker && window.isSecureContext) {
-      try {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: getBackupFileName(),
-          types: [{ description: "JSON backup", accept: { "application/json": [".json"] } }],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(json);
-        await writable.close();
-        showToast("Резервная копия сохранена в файл");
-        return;
-      } catch (e) {
-        if (e?.name === "AbortError") return;
+    // iOS Safari не поддерживает скачивание через <a download> — открываем как новую страницу
+    const isSafariIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    if (isSafariIOS) {
+      const win = window.open();
+      if (win) {
+        win.document.write(
+          `<html><head><title>${getBackupFileName()}</title></head><body>` +
+          `<p style="font-family:sans-serif;color:#555;padding:16px">Нажми <b>Поделиться → Сохранить в Файлы</b>, чтобы сохранить резервную копию.</p>` +
+          `<pre style="font-size:11px;word-break:break-all;padding:0 16px">${json}</pre>` +
+          `</body></html>`
+        );
+      } else {
+        showToast("Разреши всплывающие окна для сохранения файла");
       }
+      return;
     }
 
-    const blob = new Blob([json], { type: "application/json" });
+    // Десктоп и Android
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -813,32 +880,11 @@ function App() {
   };
   const openRestoreDialogFallback = () => {
     const input = restoreInputRef.current;
-    if (!input) {
-      showToast("Не удалось открыть выбор файла");
-      return;
-    }
-    try {
-      if (typeof input.showPicker === "function") {
-        input.showPicker();
-        return;
-      }
-    } catch {}
+    if (!input) { showToast("Не удалось открыть выбор файла"); return; }
     input.click();
   };
-  const restoreLatestBackup = async () => {
-    if (window.showOpenFilePicker && window.isSecureContext) {
-      try {
-        const [handle] = await window.showOpenFilePicker({
-          multiple: false,
-          types: [{ description: "JSON backup", accept: { "application/json": [".json"] } }],
-        });
-        const file = await handle.getFile();
-        await restoreFromFile(file);
-        return;
-      } catch (e) {
-        if (e?.name === "AbortError") return;
-      }
-    }
+  const restoreLatestBackup = () => {
+    // showOpenFilePicker не работает на мобильных — всегда используем <input type="file">
     openRestoreDialogFallback();
   };
   return (
@@ -869,7 +915,7 @@ function App() {
         <button onClick={createBackup} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13 }}>
           Создать резервную копию
         </button>
-        <button onClick={restoreLatestBackup} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13 }}>
+        <button onClick={() => restoreInputRef.current && restoreInputRef.current.click()} style={{ ...S.btn(""), width:"100%", padding:10, borderRadius:12, fontSize:13 }}>
           Восстановить последнюю резервную копию
         </button>
       </div>
